@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liten Stream Cipher Attack </title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+SC:wght@400;700&display=swap');
+        
+        body { 
+            font-family: 'Segoe UI', 'Noto Sans SC', sans-serif; 
+            background-color: #0f172a; 
+            color: #e2e8f0; 
+        }
+        
+        .mono { 
+            font-family: 'JetBrains Mono', 'Noto Sans SC', monospace; 
+        }
+        
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .result-row:hover { background-color: rgba(56, 189, 248, 0.1); }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 flex flex-col items-center">
+
+    <div class="w-full max-w-5xl space-y-6">
+        
+        <!-- 标题区域 -->
+        <header class="flex items-center justify-between border-b border-slate-700 pb-4">
+            <div>
+                <h1 class="text-2xl md:text-3xl font-bold text-emerald-400">
+                    <i class="fas fa-dragon mr-2"></i>Stream Cipher Attack 
+                </h1>
+                <p class="text-slate-400 text-sm mt-1">
+                    利用密钥重用漏洞对串流加密进行破解 (Crib Dragging)
+                </p>
+            </div>
+            <div class="hidden md:block text-right text-xs text-slate-500">
+                <p>支持中文、英文及混合输入</p>
+                <p>自动识别 UTF-8 编码边界</p>
+            </div>
+        </header>
+
+        <!-- 输入区域 -->
+        <div class="grid md:grid-cols-2 gap-6">
+            <!-- 密文 1 -->
+            <div class="bg-slate-800 p-4 rounded-lg border border-slate-700 shadow-lg relative">
+                <div class="flex justify-between mb-2">
+                    <label class="text-sm font-bold text-emerald-300">密文 A (Hex)</label>
+                    <span class="text-xs text-slate-500" id="len1">0 bytes</span>
+                </div>
+                <textarea id="cipher1" rows="3" 
+                    class="w-full bg-slate-900 border border-slate-600 rounded p-2 mono text-sm focus:border-emerald-500 focus:outline-none transition resize-none text-slate-300"
+                    placeholder="例如: e4 bd a0..." spellcheck="false"></textarea>
+            </div>
+
+            <!-- 密文 2 -->
+            <div class="bg-slate-800 p-4 rounded-lg border border-slate-700 shadow-lg relative">
+                <div class="flex justify-between mb-2">
+                    <label class="text-sm font-bold text-emerald-300">密文 B (Hex)</label>
+                    <span class="text-xs text-slate-500" id="len2">0 bytes</span>
+                </div>
+                <textarea id="cipher2" rows="3" 
+                    class="w-full bg-slate-900 border border-slate-600 rounded p-2 mono text-sm focus:border-emerald-500 focus:outline-none transition resize-none text-slate-300"
+                    placeholder="例如: e6 88 91..." spellcheck="false"></textarea>
+            </div>
+        </div>
+
+        <!-- 猜测与结果区域 -->
+        <div class="bg-slate-800 rounded-lg border border-slate-700 shadow-xl overflow-hidden flex flex-col h-[650px]">
+            
+            <!-- 控制台 -->
+            <div class="p-5 bg-slate-900 border-b border-slate-700 space-y-3">
+                
+                <div class="flex justify-between items-end">
+                    <label class="block text-sm font-bold text-cyan-400">
+                        <i class="fas fa-search mr-1"></i> 猜测原文片段 (Crib)
+                    </label>
+                    <span id="cribBytesDisplay" class="text-xs font-mono text-slate-500">
+                        UTF-8 Hex: (等待输入)
+                    </span>
+                </div>
+
+                <div class="relative group">
+                    <input type="text" id="cribInput" 
+                        class="w-full bg-slate-800 border-2 border-slate-600 rounded pl-4 pr-4 py-3 text-lg text-white mono focus:border-cyan-500 focus:outline-none transition placeholder-slate-600"
+                        placeholder="在此输入已知明文片段)"
+                        autocomplete="off">
+                </div>
+                
+                <div class="flex items-center gap-2 text-xs text-slate-400">
+                    <i class="fas fa-info-circle"></i>
+                    <span>输入文本将进行异或计算。</span>
+                </div>
+            </div>
+
+            <!-- 列表头 -->
+            <div class="grid grid-cols-12 gap-4 p-3 bg-slate-800 text-xs font-bold text-slate-500 border-b border-slate-700">
+                <div class="col-span-2 md:col-span-1 text-center">偏移</div>
+                <div class="col-span-10 md:col-span-11 pl-2">解密出的另一段明文</div>
+            </div>
+
+            <!-- 结果列表 -->
+            <div id="resultsList" class="flex-1 overflow-y-auto p-2 space-y-1 bg-[#0b1120]">
+                <!-- 初始提示 -->
+                <div class="flex flex-col items-center justify-center h-full text-slate-600 gap-4">
+                    <i class="fas fa-code-branch text-4xl opacity-30"></i>
+                    <p>等待密文输入...</p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 核心逻辑 -->
+    <script>
+        // --- 核心变量 ---
+        let bytesA = [];
+        let bytesB = [];
+        let xorStream = [];
+        
+        // 工具函数：文本编码器
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder('utf-8', { fatal: false }); // fatal:false 允许用  替换无效字节
+
+        // DOM 元素
+        const elCipher1 = document.getElementById('cipher1');
+        const elCipher2 = document.getElementById('cipher2');
+        const elCrib = document.getElementById('cribInput');
+        const elResults = document.getElementById('resultsList');
+        const elCribDisplay = document.getElementById('cribBytesDisplay');
+
+        // 事件监听
+        elCipher1.addEventListener('input', updateData);
+        elCipher2.addEventListener('input', updateData);
+        elCrib.addEventListener('input', renderResults);
+
+        // Hex 转 Byte 数组
+        function hexToBytes(hex) {
+            hex = hex.replace(/\s+/g, '').replace(/[^0-9a-fA-F]/g, '');
+            const bytes = [];
+            for (let i = 0; i < hex.length; i += 2) {
+                if (i + 1 < hex.length) {
+                    bytes.push(parseInt(hex.substr(i, 2), 16));
+                }
+            }
+            return new Uint8Array(bytes);
+        }
+
+        // Byte 数组转 Hex 字符串 (用于显示)
+        function bytesToHex(uint8arr) {
+            return Array.from(uint8arr)
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join(' ');
+        }
+
+        // 清空输入
+        function clearInputs() {
+            elCipher1.value = '';
+            elCipher2.value = '';
+            elCrib.value = '';
+            updateData();
+        }
+
+        // 数据更新主逻辑
+        function updateData() {
+            const val1 = elCipher1.value;
+            const val2 = elCipher2.value;
+
+            bytesA = hexToBytes(val1);
+            bytesB = hexToBytes(val2);
+
+            document.getElementById('len1').textContent = `${bytesA.length} bytes`;
+            document.getElementById('len2').textContent = `${bytesB.length} bytes`;
+
+            if (bytesA.length === 0 || bytesB.length === 0) {
+                xorStream = new Uint8Array(0);
+                renderResults();
+                return;
+            }
+
+            // 计算异或流 (C1 ^ C2)
+            const minLen = Math.min(bytesA.length, bytesB.length);
+            xorStream = new Uint8Array(minLen);
+            for (let i = 0; i < minLen; i++) {
+                xorStream[i] = bytesA[i] ^ bytesB[i];
+            }
+            
+            renderResults();
+        }
+
+        // 渲染结果
+        function renderResults() {
+            const cribText = elCrib.value;
+            
+            if (xorStream.length === 0) {
+                elResults.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-full text-slate-600 gap-4">
+                        <i class="fas fa-lock text-3xl opacity-30"></i>
+                        <p>请先填入两段 Hex 密文</p>
+                    </div>`;
+                elCribDisplay.textContent = "UTF-8 Hex: (等待输入)";
+                return;
+            }
+
+            if (!cribText) {
+                elResults.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-full text-slate-600 gap-4">
+                        <i class="fas fa-keyboard text-3xl opacity-30"></i>
+                        <p>请输入已知明文或猜测词</p>
+                    </div>`;
+                elCribDisplay.textContent = "UTF-8 Hex: (等待输入)";
+                return;
+            }
+
+            // 1. 将输入的 Crib 转换为 UTF-8 字节
+            const cribBytes = encoder.encode(cribText);
+            
+            // 显示 Crib 的 Hex，方便用户调试
+            elCribDisplay.textContent = `UTF-8 Hex: ${bytesToHex(cribBytes)}`;
+
+            const cribLen = cribBytes.length;
+            const maxOffset = xorStream.length - cribLen;
+
+            if (maxOffset < 0) {
+                elResults.innerHTML = `<div class="p-4 text-center text-red-400">猜测词太长，超过了密文长度。</div>`;
+                return;
+            }
+
+            let html = '';
+            
+            // 2. 遍历所有可能的偏移位置
+            for (let offset = 0; offset <= maxOffset; offset++) {
+                
+                // 截取当前位置对应长度的 XOR 流
+                const currentXorSlice = xorStream.slice(offset, offset + cribLen);
+                
+                // 计算: Potential_Plain_Bytes = XOR_Stream_Slice ^ Crib_Bytes
+                const revealedBytes = new Uint8Array(cribLen);
+                for(let i=0; i<cribLen; i++){
+                    revealedBytes[i] = currentXorSlice[i] ^ cribBytes[i];
+                }
+
+                // 3. 尝试解码为 UTF-8 字符串
+                // TextDecoder 会将无效序列替换为  (U+FFFD)
+                const revealedStr = decoder.decode(revealedBytes);
+                
+                // 4. 评分逻辑 (检查乱码程度)
+                // 统计  的数量
+                let invalidCount = 0;
+                // 统计不可见控制字符 (ASCII < 32，除了换行回车制表符)
+                let controlCount = 0;
+
+                for (let i = 0; i < revealedStr.length; i++) {
+                    const code = revealedStr.charCodeAt(i);
+                    if (code === 0xFFFD) { // Replacement Character
+                        invalidCount++;
+                    } else if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+                        controlCount++;
+                    }
+                }
+
+                const totalLen = revealedStr.length; // 注意：这是字符数，不是字节数
+                
+                // 简单的启发式判断
+                const isLikelyValid = (invalidCount === 0 && controlCount === 0);
+                const isPartialValid = (invalidCount / totalLen < 0.3); // 允许少量乱码
+
+                // 样式处理
+                let rowClass = "border-slate-800 text-slate-500 opacity-50";
+                let badge = "";
+
+                if (isLikelyValid) {
+                    // 高置信度匹配
+                    rowClass = "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 opacity-100";
+                    badge = `<span class="ml-auto text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-bold">Probable Match</span>`;
+                } else if (isPartialValid) {
+                    // 中等置信度
+                    rowClass = "bg-slate-700/30 border-slate-600 text-slate-300 opacity-80";
+                }
+
+                // 渲染行
+                html += `
+                    <div class="result-row grid grid-cols-12 gap-4 p-2 rounded border ${rowClass} transition-colors items-center font-mono text-sm">
+                        <div class="col-span-2 md:col-span-1 text-center text-xs opacity-70 border-r border-slate-700/50 pt-1">${offset}</div>
+                        <div class="col-span-10 md:col-span-11 pl-2 flex items-center overflow-hidden">
+                            <span class="truncate select-all w-full">${escapeHtml(revealedStr)}</span>
+                            ${badge}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            elResults.innerHTML = html;
+        }
+
+        // 安全转义 HTML
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+        }
+    </script>
+</body>
+</html>
